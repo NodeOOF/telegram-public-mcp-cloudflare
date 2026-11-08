@@ -1,95 +1,477 @@
-# telegram-public-mcp-cloudflare
+# telegram-notifier (v1.5.0)
 
-Public Telegram MCP server for Cloudflare Workers. It reads public Telegram channel pages at `t.me/s/{channel}` and exposes them as MCP tools over Streamable HTTP/JSON-RPC.
+> ربات رصد کانال‌های عمومی تلگرام با داشبورد ثابت، فیلتر هوشمند و پوش‌نوتیفیکیشن
 
-No Telegram API credentials are required. The server only fetches public web pages.
+یک Cloudflare Worker که هم به عنوان **MCP server** برای خواندن صفحات عمومی `t.me/s/{channel}` عمل می‌کند، و هم یک **ربات تلگرام کامل** با داشبورد تعاملی، فیلتر کلمه کلیدی مستقل برای هر کانال، پوش‌نوتیفیکیشن هوشمند و ریست خودکار نیمه‌شب است. **بدون نیاز به API ID یا API Hash تلگرام** — فقط صفحات عمومی وب.
 
-## Public hosted instance
+---
 
-Anyone can use the deployed public MCP endpoint:
+## ✨ ویژگی‌ها
 
-```text
-https://telegram-public-mcp-cf.mametevalex.workers.dev/mcp
+### داشبورد ثابت
+- **فقط یک پیام** در چت — با هر آپدیت، همان پیام ادیت می‌شود
+- قابل کنترل کامل با دکمه‌های اینلاین
+- نمایش وضعیت، آخرین بررسی، آمار روزانه و آخرین پست
+
+### چند کاناله
+- افزودن نامحدود کانال عمومی
+- هر کانال **فیلتر کلمه کلیدی مستقل** خودش را دارد
+- فعال/غیرفعال کردن هر کانال به صورت جداگانه
+- حذف کانال با یک کلیک
+
+### پوش‌نوتیفیکیشن هوشمند
+```
+| حالت کانال                | داشبورد | پوش |
+| ------------------------- | ------- | --- |
+| فیلتر دارد + پست مطابق    | ✅       | 🔔  |
+| فیلتر دارد + پست غیرمطابق | ❌       | ❌   |
+| بدون فیلتر                | ✅ (همه) | ❌   |
 ```
 
-Health check:
+- پوش فقط برای **پست‌های جدید مطابق فیلتر** ارسال می‌شود
+- پوش در **دکمه بروزرسانی دستی** ارسال نمی‌شود (کاربر خودش فعال است)
+- toggle کلی روشن/خاموش در داشبورد
 
-```text
-https://telegram-public-mcp-cf.mametevalex.workers.dev/healthz
+### ریست خودکار نیمه‌شب
+- هر روز ساعت **۰۰:۰۰ تهران**
+- همه فیلترها پاک می‌شوند
+- همه پیام‌های ربات (شامل پوش‌ها) حذف می‌شوند
+- داشبورد جدید ساخته می‌شود
+- کش `seen` پاک می‌شود
+
+### پاک‌سازی خودکار پیام‌ها
+- پیام‌های کاربر (`/start`، `/help`، کلمات فیلتر، نام کانال) → در تریگر بعدی Cron
+- پیام‌های تأیید ربات («✅ اضافه شد») → در تریگر بعدی
+- **داشبورد** → هرگز (تا ریست نیمه‌شب)
+
+### MCP Tools (بدون تغییر از نسخه اصلی)
+- `get_channel_info` — عنوان، توضیح، آواتار، تعداد اعضا
+- `get_latest_posts` — پست‌های اخیر با متن، تصویر، بازدید، زمان
+- `search_posts` — جستجوی عمومی از طریق `t.me/s/{channel}?q=...`
+
+### Debug endpoints
+- `GET /healthz` — وضعیت Secrets
+- `GET /debug` — جزئیات کامل config + getMe
+- `GET /api/test-message` — ارسال پیام تست
+- `GET /api/force-start` — بازسازی اجباری داشبورد
+- `GET /api/config-reset` — پاک کردن config
+
+---
+
+## 🏗️ معماری
+
+```
+┌─────────────────┐     ┌──────────────────────┐
+│ Telegram Bot    │◄────►│ Cloudflare Worker    │
+│ (User Chat)     │webhook│ (telegram-notifier) │
+└─────────────────┘     └──────────┬───────────┘
+                                   │
+                    ┌──────────────┼──────────────┐
+                    ▼              ▼              ▼
+              ┌──────────┐  ┌──────────┐  ┌──────────┐
+              │ KV       │  │ Cron     │  │ t.me/s/  │
+              │SEEN_POSTS│  │ */10     │  │ {ch}     │
+              └──────────┘  └──────────┘  └──────────┘
 ```
 
-## Tools
+- **Webhook**: دریافت callback و پیام از تلگرام
+- **Cron** (هر ۱۰ دقیقه): بررسی کانال‌ها + ارسال پوش + ریست نیمه‌شب
+- **KV**: ذخیره config، seen posts، پیام‌های ربات
+- **t.me/s**: خواندن صفحات عمومی (بدون API)
 
-| Tool | Description |
-|---|---|
-| `get_channel_info` | Public channel title, description, avatar, subscriber counter, canonical URL. |
-| `get_latest_posts` | Latest public posts with text, images, views, timestamps, pagination by `before_post_id` or `before_time`. |
-| `search_posts` | Telegram public web search via `https://t.me/s/{channel}?q=...`. |
+---
 
-## Endpoints
+## 🚀 نصب و راه‌اندازی
 
-Live Cloudflare deployment:
+### پیش‌نیازها
 
-- `GET https://telegram-public-mcp-cf.mametevalex.workers.dev/healthz` — health check.
-- `POST https://telegram-public-mcp-cf.mametevalex.workers.dev/mcp` — MCP JSON-RPC endpoint.
+1. **حساب Cloudflare** (رایگان کافی است)
+2. **ربات تلگرام** — از [@BotFather](https://t.me/BotFather) بگیرید
+3. **Chat ID** — از [@userinfobot](https://t.me/userinfobot) بگیرید
+4. **Node.js** (نسخه ۱۸+) و **Wrangler**
 
-Generic endpoints:
-
-- `GET /healthz` — health check.
-- `POST /mcp` — MCP JSON-RPC endpoint.
-
-## Deploy
+### ۱. نصب Wrangler
 
 ```bash
-npm install
-npx wrangler deploy
+npm install -g wrangler
+wrangler login
 ```
 
-`wrangler.toml`:
+### ۲. ساخت KV Namespace
+
+```bash
+npx wrangler kv namespace create "SEEN_POSTS"
+```
+
+خروجی یک `id` می‌دهد. آن را در `wrangler.toml` قرار دهید.
+
+### ۳. تنظیم Secretها
+
+```bash
+npx wrangler secret put BOT_TOKEN
+# توکن ربات را وارد کنید و Enter
+
+npx wrangler secret put MY_CHAT_ID
+# Chat ID عددی خود را وارد کنید
+```
+
+### ۴. تنظیم `wrangler.toml`
 
 ```toml
-name = "telegram-public-mcp-cf"
+name = "telegram-notifier"
 main = "src/worker.js"
 compatibility_date = "2026-07-09"
 
 [vars]
 TELEGRAM_BASE_URL = "https://t.me"
+CHANNEL_NAME = "-----------" # کانال پیش‌فرض اولیه
+
+[[kv_namespaces]]
+binding = "SEEN_POSTS"
+id = "<YOUR_KV_ID>"
+
+[triggers]
+crons = ["*/10 * * * *"]
 ```
 
-## MCP examples
+> **نکته**: `CHANNEL_NAME` فقط برای نصب اولیه استفاده می‌شود. بعد از اولین `/start`، کانال‌ها از `config.channels` خوانده می‌شوند.
 
-List tools:
+### ۵. Deploy
 
 ```bash
-curl -s https://telegram-public-mcp-cf.<account>.workers.dev/mcp \
-  -H 'content-type: application/json' \
-  --data-binary '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq
+npx wrangler deploy
 ```
 
-Get latest posts:
+### ۶. تنظیم Webhook
 
 ```bash
-curl -s https://telegram-public-mcp-cf.<account>.workers.dev/mcp \
-  -H 'content-type: application/json' \
-  --data-binary '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_latest_posts","arguments":{"channel":"telegram","limit":3}}}' | jq
+curl.exe "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://telegram-notifier.<account>.workers.dev/webhook"
 ```
 
-## Hermes Agent config
+پاسخ موفق: `{"ok":true,"result":true,"description":"Webhook was set"}`
 
-```yaml
-mcp_servers:
-  telegram-public:
-    url: https://telegram-public-mcp-cf.mametevalex.workers.dev/mcp
-    timeout: 120
-    connect_timeout: 60
+### ۷. فعال‌سازی داشبورد
+
+در تلگرام به ربات خود بروید و `/start` بزنید. پیام داشبورد با دکمه‌ها ظاهر می‌شود. **آن را Pin کنید** تا همیشه در بالای چت بماند.
+
+---
+
+## 🎛️ دکمه‌ها و دستورات
+
+### دکمه‌های داشبورد
+
+```
+| دکمه                | عملکرد                             |
+| ------------------- | ---------------------------------- |
+| 🔄 **بروزرسانی**    | بررسی فوری همه کانال‌ها (بدون پوش) |
+| 🟢/🔴 **توقف/شروع** | فعال/غیرفعال کردن کل رصد           |
+| 🔔/🔕 **پوش**       | روشن/خاموش کردن پوش کلی            |
+| 🎯/📋 **نمایش**     | تک‌پست یا لیست ۵ پست               |
+| 📢 **کانال‌ها**     | مدیریت کانال‌ها و فیلترها          |
+| 🟣 **ریست**         | پاک کردن کش `seen`                 |
+| ❓ **راهنما**        | نمایش راهنما                       |
 ```
 
-## Limitations
+### منوی کانال‌ها
 
-- Only public Telegram channels are supported.
-- Telegram can change `t.me/s` HTML; parser updates may be needed.
-- Subscriber/view counts are returned as Telegram renders them.
+```
+| دکمه               | عملکرد                           |
+| ------------------ | -------------------------------- |
+| ➕ **افزودن کانال** | افزودن کانال جدید (نام بدون `@`) |
+| روی هر کانال       | ورود به تنظیمات آن کانال         |
+```
 
-## License
+### تنظیمات هر کانال
 
-MIT
+```
+| دکمه                   | عملکرد                       |
+| ---------------------- | ---------------------------- |
+| ➕ **افزودن کلمه**      | افزودن کلمه کلیدی برای فیلتر |
+| ❌ **کلمه**             | حذف آن کلمه                  |
+| 🧹 **پاک کردن کلمات**  | حذف همه کلمات                |
+| 🟢/🔴 **فعال/غیرفعال** | toggle آن کانال              |
+| ❌ **حذف کانال**        | حذف کامل کانال               |
+```
+
+### دستورات متنی
+
+```
+| دستور     | عملکرد               |
+| --------- | -------------------- |
+| `/start`  | ساخت/بازسازی داشبورد |
+| `/help`   | راهنما               |
+| `/cancel` | لغو عملیات در انتظار |
+```
+
+---
+
+## 🔔 منطق پوش‌نوتیفیکیشن
+
+پوش فقط در این حالت ارسال می‌شود:
+
+1. کانال فعال باشد
+2. کانال حداقل یک کلمه کلیدی داشته باشد
+3. پست جدید در Cron بعدی پیدا شود
+4. پست حداقل یکی از کلمات را داشته باشد
+5. `pushEnabled` روشن باشد
+6. درخواست از نوع `force` (دکمه بروزرسانی) نباشد
+
+### قالب پوش
+
+**یک پست:**
+```
+🔔 پست جدید مطابق فیلتر
+📢 @Akhbare_madrs
+
+[متن پست]
+
+🔗 مشاهده در کانال | 👁 2.4K
+🕐 2026-11-09T08:30:00+00:00
+```
+
+**چند پست:** (حداکثر ۵ پست اول)
+```
+🔔 ۷ پست جدید مطابق فیلتر
+(نمایش ۵ پست اول — بقیه در داشبورد)
+
+1. @Akhbare_madrs
+[متن کوتاه]
+🔗 مشاهده
+
+2. ...
+```
+
+---
+
+## 🌙 ریست نیمه‌شب
+
+هر روز در اولین اجرای Cron بعد از **۰۰:۰۰ تهران**:
+
+1. همه پیام‌های ربات حذف می‌شوند (`botMsgs` در KV)
+2. همه کلیدهای `seen:*` و `init:*` پاک می‌شوند
+3. کلمات کلیدی همه کانال‌ها خالی می‌شوند
+4. داشبورد جدید ساخته می‌شود
+5. یک پیام «🌙 ریست انجام شد» ارسال می‌شود (که در تریگر بعدی حذف می‌شود)
+
+> **توجه**: کانال‌ها حذف نمی‌شوند — فقط فیلترها. اگر می‌خواهید کانال‌ها هم پاک شوند، در `performMidnightReset` خط `for (const ch of cfg.channels) ch.keywords = [];` را به `cfg.channels = [];` تغییر دهید.
+
+---
+
+## ⏱ زمان‌بندی
+
+Cron هر **۱۰ دقیقه** اجرا می‌شود (`*/10 * * * *`).
+
+```
+| Interval   | تأخیر پست      | مصرف روزانه (تخمینی) |
+| ---------- | -------------- | -------------------- |
+| `*/5`      | ≤ ۵ دقیقه      | ۲۸۸ اجرا             |
+| **`*/10`** | **≤ ۱۰ دقیقه** | **۱۴۴ اجرا**         |
+| `*/15`     | ≤ ۱۵ دقیقه     | ۹۶ اجرا              |
+```
+
+> اگر می‌خواهید سریع‌تر باشد، `*/5` بگذارید. اما `*/10` تعادل خوبی بین تأخیر و مصرف است.
+
+---
+
+## 🧪 تست و دیباگ
+
+### بررسی سلامت
+
+```bash
+curl https://telegram-notifier.<account>.workers.dev/healthz
+```
+
+پاسخ:
+```json
+{"ok":true,"service":"telegram-public-mcp-cf","version":"1.5.0","hasBotToken":true,"hasChatId":true,"hasKV":true}
+```
+
+### مشاهده config فعلی
+
+```bash
+curl https://telegram-notifier.<account>.workers.dev/debug
+```
+
+شامل: وضعیت Secretها، `getMe` ربات، config فعلی (کانال‌ها، فیلترها، پیام‌ها).
+
+### تست ارسال پیام
+
+```bash
+curl https://telegram-notifier.<account>.workers.dev/api/test-message
+```
+
+اگر `ok: true` بود و پیام تست در تلگرام آمد، BOT_TOKEN و Chat ID سالماند.
+
+### بازسازی اجباری داشبورد
+
+```bash
+curl https://telegram-notifier.<account>.workers.dev/api/force-start
+```
+
+### ریست config (شروع از صفر)
+
+```bash
+curl https://telegram-notifier.<account>.workers.dev/api/config-reset
+```
+
+سپس در تلگرام `/start` بزنید.
+
+### مشاهده لاگ زنده
+
+```bash
+npx wrangler tail
+```
+
+لاگ‌ها با پیشوندهای `[WEBHOOK]`، `[MSG]`، `[CRON]`، `[PUSH]`، `[RESET]`، `[EDIT]`، `[INIT]` قابل شناسایی هستند.
+
+---
+
+## 🔧 MCP Endpoints
+
+### ابزارها
+
+```
+| ابزار              | توضیح                                       |
+| ------------------ | ------------------------------------------- |
+| `get_channel_info` | عنوان، توضیح، آواتار، تعداد اعضا، URL کانال |
+| `get_latest_posts` | پست‌های اخیر با متن، تصویر، بازدید، زمان    |
+| `search_posts`     | جستجو در پست‌های عمومی کانال                |
+```
+
+### مثال: دریافت لیست ابزارها
+
+```bash
+curl -X POST https://telegram-notifier.<account>.workers.dev/mcp \
+-H "Content-Type: application/json" \
+-d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+### مثال: دریافت پست‌ها
+
+```bash
+curl -X POST https://telegram-notifier.<account>.workers.dev/mcp \
+-H "Content-Type: application/json" \
+-d '{
+"jsonrpc":"2.0",
+"id":2,
+"method":"tools/call",
+"params":{
+"name":"get_latest_posts",
+"arguments":{"channel":"Akhbare_madrs","limit":5}
+}
+}'
+```
+
+پاسخ:
+```json
+{
+"jsonrpc":"2.0",
+"id":2,
+"result":{
+"content":[{
+"type":"text",
+"text":"[{\"id\":460,\"channel\":\"Akhbare_madrs\",\"text\":\"...\"}]"
+}]
+}
+}
+```
+
+---
+
+## 📋 محدودیت‌ها
+
+- **فقط کانال‌های عمومی** — کانال‌های خصوصی و کانال‌هایی که `t.me/s` را غیرفعال کرده‌اند قابل خواندن نیستند
+- **وابستگی به HTML تلگرام** — اگر ساختار `t.me/s` تغییر کند، ممکن است نیاز به به‌روزرسانی parser باشد
+- **بدون پوش برای پست‌های قدیمی** — پستی که قبل از افزودن کانال منتشر شده، پوش نمی‌شود
+- **تأخیر Cron** — بین ۰ تا ۱۰ دقیقه (بسته به زمان‌بندی)
+- **محدودیت KV** — Cloudflare رایگان ۱۰۰۰ write در روز به KV می‌دهد. برای کانال‌های کم‌پست کاملاً امن است
+- **پاک‌سازی پیام** — پیام‌های قدیمی‌تر از ۴۸ ساعت توسط ربات قابل حذف نیستند
+
+---
+
+## 🗂️ ساختار KV
+
+```
+| کلید                      | مقدار                                                       | TTL      |
+| ------------------------- | ----------------------------------------------------------- | -------- |
+| `config`                  | JSON کامل تنظیمات                                           | بدون TTL |
+| `seen:<channel>:<postId>` | `"1"`                                                       | ۷ روز    |
+| `init:<channel>`          | `"1"`                                                       | بدون TTL |
+| `pending:<chatId>`        | حالت انتظار (`awaiting_channel` / `awaiting_keyword:<idx>`) | ۵ دقیقه  |
+| `botMsgs:<chatId>`        | آرایه‌ای از `message_id` ها                                 | ۷ روز    |
+```
+
+---
+
+## 🎯 نقشه راه آینده
+
+- [ ] پشتیبانی از فوروارد پست به چت دیگر
+- [ ] فیلتر AND/OR (همه کلمات / هر کدام)
+- [ ] تاریخچه پست‌های امروز (از KV)
+- [ ] خلاصه صبحگاهی
+- [ ] خروجی CSV
+- [ ] چند ادمین
+- [ ] سکوت شبانه (بدون پوش)
+
+---
+
+## 📜 مجوز
+
+MIT — همان مجوز اصلی [telegram-public-mcp-cloudflare](https://github.com/freQuensy23-coder/telegram-public-mcp-cloudflare).
+
+---
+
+## 🙏 تقدیر
+
+- MCP server اصلی از [freQuensy23-coder](https://github.com/freQuensy23-coder/telegram-public-mcp-cloudflare)
+- سرویس عمومی MCP: `https://telegram-public-mcp-cf.mametevalex.workers.dev/mcp`
+- ساخته شده روی [Cloudflare Workers](https://workers.cloudflare.com/)
+```
+
+---
+
+## 🚀 چطور استفاده کنید
+
+**۱. فایل `README.md` پروژه‌تان را با این محتوا جایگزین کنید.**
+
+**۲. یک `package.json` ساده هم اگر ندارید:**
+
+```json
+{
+"name": "telegram-notifier",
+"version": "1.5.0",
+"description": "Telegram channel monitor bot with dashboard, filters and smart push notifications on Cloudflare Workers",
+"main": "src/worker.js",
+"scripts": {
+"deploy": "wrangler deploy",
+"dev": "wrangler dev",
+"tail": "wrangler tail"
+},
+"keywords": ["telegram", "mcp", "cloudflare-workers", "bot", "monitor"],
+"license": "MIT"
+}
+```
+
+**۳. (اختیاری) یک `LICENSE` هم اضافه کنید** — همان MIT که در README ذکر شده.
+
+**۴. Commit کنید:**
+
+```bash
+git add README.md package.json
+git commit -m "docs: update README for v1.5.0"
+git push
+```
+
+---
+
+## 💡 چیزهایی که در README مستند شده
+
+- ✅ همه ویژگی‌های v1.5.0 (پوش هوشمند، ریست نیمه‌شب، چندکاناله)
+- ✅ معماری کامل با دیاگرام
+- ✅ مراحل نصب قدم به قدم
+- ✅ جدول دکمه‌ها و دستورات
+- ✅ منطق پوش (جدول سه‌حالته)
+- ✅ نمونه‌های cURL برای MCP و API endpoints
+- ✅ ساختار KV
+- ✅ محدودیت‌ها و نقشه راه
+- ✅ تقدیر از پروژه اصلی

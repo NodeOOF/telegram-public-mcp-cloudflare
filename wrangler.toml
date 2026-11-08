@@ -4,11 +4,11 @@ compatibility_date = "2026-07-09"
 
 [vars]
 TELEGRAM_BASE_URL = "https://t.me"
-CHANNEL_NAME = "++++++"
+CHANNEL_NAME = ""
 
 [[kv_namespaces]]
 binding = "SEEN_POSTS"
-id = "ID-KV"
+id = ""
 
 [triggers]
 crons = ["*/10 * * * *"]
