@@ -1,6 +1,14 @@
-name = "telegram-public-mcp-cf"
+name = "telegram-notifier"
 main = "src/worker.js"
 compatibility_date = "2026-07-09"
 
 [vars]
 TELEGRAM_BASE_URL = "https://t.me"
+CHANNEL_NAME = "++++++"
+
+[[kv_namespaces]]
+binding = "SEEN_POSTS"
+id = "ID-KV"
+
+[triggers]
+crons = ["*/10 * * * *"]
